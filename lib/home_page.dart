@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'sudoku_page.dart';
-import 'package:flutter_isolate/flutter_isolate.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:math';
 
@@ -104,33 +103,23 @@ class _HomePageState extends State<HomePage> {
       );
 
       print('パズル生成開始: $count');
-      try {
-        final puzzleData = await _generatePuzzleWithRetry(count);
-        print('パズル生成完了: $count');
+      final puzzleData = generatePuzzleData(count); // メインスレッドで即時生成
+      print('パズル生成完了: $count');
 
-        if (context.mounted) {
-          Navigator.pop(context);
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => SudokuPage(
-                visibleCellCount: count,
-                initialGrid: puzzleData['initialGrid']!,
-                grid: puzzleData['grid']!,
-                fullGrid: puzzleData['fullGrid'],
-                onClear: (score) => _saveStats(count, score),
-              ),
+      if (context.mounted) {
+        Navigator.pop(context);
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => SudokuPage(
+              visibleCellCount: count,
+              initialGrid: puzzleData['initialGrid']!,
+              grid: puzzleData['grid']!,
+              fullGrid: puzzleData['fullGrid'],
+              onClear: (score) => _saveStats(count, score),
             ),
-          );
-        }
-      } catch (e) {
-        print('エラー: $e');
-        if (context.mounted) {
-          Navigator.pop(context);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('問題の生成に失敗しました: $e')),
-          );
-        }
+          ),
+        );
       }
     },
     child: Container(
@@ -163,23 +152,7 @@ class _HomePageState extends State<HomePage> {
     ),
   );
 
-  Future<Map<String, List<List<int>>>> _generatePuzzleWithRetry(int visibleCellCount) async {
-    const maxRetries = 3;
-    for (int attempt = 0; attempt < maxRetries; attempt++) {
-      try {
-        return await flutterCompute<Map<String, List<List<int>>>, int>(generatePuzzleData, visibleCellCount)
-            .timeout(Duration(seconds: 3), onTimeout: () {
-          print('タイムアウト (試行 $attempt): $visibleCellCount');
-          throw Exception('タイムアウト');
-        });
-      } catch (e) {
-        if (attempt == maxRetries - 1) rethrow; // 最後の試行で失敗したらエラー
-      }
-    }
-    throw Exception('予期せぬエラー'); // ここには到達しないはず
-  }
-
-  static Map<String, List<List<int>>> generatePuzzleData(int visibleCellCount) {
+  Map<String, List<List<int>>> generatePuzzleData(int visibleCellCount) {
     final rand = Random();
     List<List<int>> grid = _generateFullGrid(rand);
     List<List<int>> fullGrid = List.generate(9, (i) => List.from(grid[i]));
@@ -192,46 +165,74 @@ class _HomePageState extends State<HomePage> {
     };
   }
 
-  static List<List<int>> _generateFullGrid(Random rand) {
-    List<List<int>> grid = List.generate(9, (_) => List<int>.filled(9, 0));
+  List<List<int>> _generateFullGrid(Random rand) {
+    // 複数のベースグリッドを用意（有効なナンプレ）
+    final List<List<List<int>>> baseGrids = [
+      [
+        [5, 3, 4, 6, 7, 8, 9, 1, 2],
+        [6, 7, 2, 1, 9, 5, 3, 4, 8],
+        [1, 9, 8, 3, 4, 2, 5, 6, 7],
+        [8, 5, 9, 7, 6, 1, 4, 2, 3],
+        [4, 2, 6, 8, 5, 3, 7, 9, 1],
+        [7, 1, 3, 9, 2, 4, 8, 5, 6],
+        [9, 6, 1, 5, 3, 7, 2, 8, 4],
+        [2, 8, 7, 4, 1, 9, 6, 3, 5],
+        [3, 4, 5, 2, 8, 6, 1, 7, 9],
+      ],
+      [
+        [8, 3, 4, 1, 5, 9, 6, 7, 2],
+        [5, 6, 7, 8, 2, 4, 9, 1, 3],
+        [9, 1, 2, 6, 7, 3, 5, 4, 8],
+        [4, 5, 8, 9, 6, 1, 7, 2, 3],
+        [7, 2, 1, 5, 8, 4, 3, 9, 6],
+        [6, 9, 3, 7, 4, 2, 8, 5, 1],
+        [1, 7, 6, 4, 9, 8, 2, 3, 5],
+        [3, 8, 5, 2, 1, 7, 4, 6, 9],
+        [2, 4, 9, 3, 6, 5, 1, 8, 7],
+      ],
+    ];
 
-    // 最初の行にランダムな数字を配置して高速化
-    List<int> firstRow = List.generate(9, (i) => i + 1)..shuffle(rand);
-    for (int col = 0; col < 9; col++) {
-      grid[0][col] = firstRow[col];
-    }
-
-    _fillGrid(grid, rand, 1, 0); // 2行目から埋める
-    return grid;
+    // ランダムにベースを選択
+    List<List<int>> baseGrid = List.generate(9, (i) => List.from(baseGrids[rand.nextInt(baseGrids.length)][i]));
+    return _transformGrid(baseGrid, rand);
   }
 
-  static bool _fillGrid(List<List<int>> grid, Random rand, int row, int col) {
-    if (row >= 9) return true;
+  List<List<int>> _transformGrid(List<List<int>> grid, Random rand) {
+    List<List<int>> transformed = List.generate(9, (i) => List.from(grid[i]));
 
-    int nextRow = col == 8 ? row + 1 : row;
-    int nextCol = col == 8 ? 0 : col + 1;
-
-    if (grid[row][col] != 0) return _fillGrid(grid, rand, nextRow, nextCol);
-
-    List<int> numbers = List.generate(9, (i) => i + 1);
-    int attempts = 0;
-    const maxAttempts = 10; // 試行回数を制限して高速化
-
-    while (attempts < maxAttempts && numbers.isNotEmpty) {
-      int idx = rand.nextInt(numbers.length);
-      int num = numbers[idx];
-      if (_isValid(grid, row, col, num)) {
-        grid[row][col] = num;
-        if (_fillGrid(grid, rand, nextRow, nextCol)) return true;
-        grid[row][col] = 0;
+    // 1. 行のシャッフル（3x3ブロック内）
+    for (int block = 0; block < 3; block++) {
+      List<int> rows = [block * 3, block * 3 + 1, block * 3 + 2]..shuffle(rand);
+      for (int i = 0; i < 3; i++) {
+        transformed[block * 3 + i] = List.from(grid[rows[i]]);
       }
-      numbers.removeAt(idx);
-      attempts++;
     }
-    return false;
+
+    // 2. 列のシャッフル（3x3ブロック内）
+    List<List<int>> temp = List.generate(9, (_) => List<int>.filled(9, 0));
+    for (int block = 0; block < 3; block++) {
+      List<int> cols = [block * 3, block * 3 + 1, block * 3 + 2]..shuffle(rand);
+      for (int j = 0; j < 9; j++) {
+        for (int i = 0; i < 3; i++) {
+          temp[j][block * 3 + i] = transformed[j][cols[i]];
+        }
+      }
+    }
+    transformed = temp;
+
+    // 3. 数字の置換
+    List<int> numbers = List.generate(9, (i) => i + 1)..shuffle(rand);
+    Map<int, int> mapping = Map.fromIterables(List.generate(9, (i) => i + 1), numbers);
+    for (int i = 0; i < 9; i++) {
+      for (int j = 0; j < 9; j++) {
+        transformed[i][j] = mapping[transformed[i][j]]!;
+      }
+    }
+
+    return transformed;
   }
 
-  static List<List<int>> _createInitialGrid(List<List<int>> grid, int visibleCellCount, Random rand) {
+  List<List<int>> _createInitialGrid(List<List<int>> grid, int visibleCellCount, Random rand) {
     List<List<int>> initialGrid = List.generate(9, (i) => List.from(grid[i]));
     List<int> positions = List.generate(81, (i) => i)..shuffle(rand);
     int cellsToRemove = 81 - visibleCellCount;
@@ -243,20 +244,30 @@ class _HomePageState extends State<HomePage> {
       initialGrid[row][col] = 0;
     }
 
-    return initialGrid;
-  }
-
-  static bool _isValid(List<List<int>> grid, int row, int col, int num) {
-    for (int x = 0; x < 9; x++) {
-      if (grid[row][x] == num || grid[x][col] == num) return false;
-    }
-    int startRow = row - row % 3;
-    int startCol = col - col % 3;
-    for (int i = 0; i < 3; i++) {
-      for (int j = 0; j < 3; j++) {
-        if (grid[startRow + i][startCol + j] == num) return false;
+    // visibleCellCountが17の場合、厳密に17を保証
+    if (visibleCellCount == 17) {
+      int currentVisible = initialGrid.expand((row) => row).where((cell) => cell != 0).length;
+      print('表示セル数調整: 現在 $currentVisible, 目標 17');
+      while (currentVisible < 17) {
+        int idx = positions[currentVisible + cellsToRemove];
+        int row = idx ~/ 9;
+        int col = idx % 9;
+        if (initialGrid[row][col] == 0) {
+          initialGrid[row][col] = grid[row][col];
+          currentVisible++;
+        }
+      }
+      while (currentVisible > 17) {
+        int idx = positions[currentVisible - 1];
+        int row = idx ~/ 9;
+        int col = idx % 9;
+        if (initialGrid[row][col] != 0) {
+          initialGrid[row][col] = 0;
+          currentVisible--;
+        }
       }
     }
-    return true;
+
+    return initialGrid;
   }
 }
