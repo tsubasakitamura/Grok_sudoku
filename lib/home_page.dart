@@ -103,9 +103,20 @@ class _HomePageState extends State<HomePage> {
       );
 
       print('パズル生成開始: $count');
-      final puzzleData = generatePuzzleData(count); // メインスレッドで即時生成
-      print('パズル生成完了: $count');
+      Map<String, List<List<int>>> puzzleData = generatePuzzleData(count);
 
+      if (!_isValidPuzzle(puzzleData['initialGrid']!, puzzleData['fullGrid']!)) {
+        print('エラー: 有効な盤面を生成できませんでした');
+        if (context.mounted) {
+          Navigator.pop(context);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('有効な問題の生成に失敗しました')),
+          );
+        }
+        return;
+      }
+
+      print('パズル生成完了: $count');
       if (context.mounted) {
         Navigator.pop(context);
         Navigator.push(
@@ -154,9 +165,12 @@ class _HomePageState extends State<HomePage> {
 
   Map<String, List<List<int>>> generatePuzzleData(int visibleCellCount) {
     final rand = Random();
-    List<List<int>> grid = _generateFullGrid(rand);
+    List<List<int>> grid;
+    do {
+      grid = _generateFullGrid(rand);
+    } while (!_isValidFullGrid(grid));
     List<List<int>> fullGrid = List.generate(9, (i) => List.from(grid[i]));
-    List<List<int>> initialGrid = _createInitialGrid(grid, visibleCellCount, rand);
+    List<List<int>> initialGrid = _createInitialGrid(fullGrid, visibleCellCount, rand);
 
     return {
       'grid': initialGrid,
@@ -166,7 +180,6 @@ class _HomePageState extends State<HomePage> {
   }
 
   List<List<int>> _generateFullGrid(Random rand) {
-    // 複数のベースグリッドを用意（有効なナンプレ）
     final List<List<List<int>>> baseGrids = [
       [
         [5, 3, 4, 6, 7, 8, 9, 1, 2],
@@ -192,7 +205,6 @@ class _HomePageState extends State<HomePage> {
       ],
     ];
 
-    // ランダムにベースを選択
     List<List<int>> baseGrid = List.generate(9, (i) => List.from(baseGrids[rand.nextInt(baseGrids.length)][i]));
     return _transformGrid(baseGrid, rand);
   }
@@ -203,22 +215,23 @@ class _HomePageState extends State<HomePage> {
     // 1. 行のシャッフル（3x3ブロック内）
     for (int block = 0; block < 3; block++) {
       List<int> rows = [block * 3, block * 3 + 1, block * 3 + 2]..shuffle(rand);
+      List<List<int>> tempBlock = List.generate(3, (i) => List.from(transformed[rows[i]]));
       for (int i = 0; i < 3; i++) {
-        transformed[block * 3 + i] = List.from(grid[rows[i]]);
+        transformed[block * 3 + i] = tempBlock[i];
       }
     }
 
     // 2. 列のシャッフル（3x3ブロック内）
-    List<List<int>> temp = List.generate(9, (_) => List<int>.filled(9, 0));
     for (int block = 0; block < 3; block++) {
       List<int> cols = [block * 3, block * 3 + 1, block * 3 + 2]..shuffle(rand);
-      for (int j = 0; j < 9; j++) {
+      List<List<int>> temp = List.generate(9, (i) => List.from(transformed[i]));
+      for (int row = 0; row < 9; row++) {
         for (int i = 0; i < 3; i++) {
-          temp[j][block * 3 + i] = transformed[j][cols[i]];
+          temp[row][block * 3 + i] = transformed[row][cols[i]];
         }
       }
+      transformed = temp;
     }
-    transformed = temp;
 
     // 3. 数字の置換
     List<int> numbers = List.generate(9, (i) => i + 1)..shuffle(rand);
@@ -233,41 +246,174 @@ class _HomePageState extends State<HomePage> {
   }
 
   List<List<int>> _createInitialGrid(List<List<int>> grid, int visibleCellCount, Random rand) {
-    List<List<int>> initialGrid = List.generate(9, (i) => List.from(grid[i]));
+    List<List<int>> initialGrid = List.generate(9, (i) => List.filled(9, 0));
     List<int> positions = List.generate(81, (i) => i)..shuffle(rand);
-    int cellsToRemove = 81 - visibleCellCount;
+    int cellsToFill = visibleCellCount;
 
-    for (int i = 0; i < cellsToRemove; i++) {
+    for (int i = 0; i < 81 && cellsToFill > 0; i++) {
       int idx = positions[i];
       int row = idx ~/ 9;
       int col = idx % 9;
-      initialGrid[row][col] = 0;
-    }
-
-    // visibleCellCountが17の場合、厳密に17を保証
-    if (visibleCellCount == 17) {
-      int currentVisible = initialGrid.expand((row) => row).where((cell) => cell != 0).length;
-      print('表示セル数調整: 現在 $currentVisible, 目標 17');
-      while (currentVisible < 17) {
-        int idx = positions[currentVisible + cellsToRemove];
-        int row = idx ~/ 9;
-        int col = idx % 9;
-        if (initialGrid[row][col] == 0) {
-          initialGrid[row][col] = grid[row][col];
-          currentVisible++;
-        }
-      }
-      while (currentVisible > 17) {
-        int idx = positions[currentVisible - 1];
-        int row = idx ~/ 9;
-        int col = idx % 9;
-        if (initialGrid[row][col] != 0) {
-          initialGrid[row][col] = 0;
-          currentVisible--;
-        }
+      int value = grid[row][col];
+      initialGrid[row][col] = value;
+      if (_isValidInitialGrid(initialGrid)) {
+        cellsToFill--;
+      } else {
+        initialGrid[row][col] = 0;
       }
     }
 
     return initialGrid;
+  }
+
+  bool _isValidPuzzle(List<List<int>> initialGrid, List<List<int>> fullGrid) {
+    // 1. initialGridの重複チェック
+    for (int i = 0; i < 9; i++) {
+      Map<int, int> rowCount = {};
+      for (int j = 0; j < 9; j++) {
+        if (initialGrid[i][j] != 0) {
+          if (rowCount[initialGrid[i][j]] != null) {
+            print('行 $i で重複: ${initialGrid[i][j]}');
+            return false;
+          }
+          rowCount[initialGrid[i][j]] = 1;
+        }
+      }
+      Map<int, int> colCount = {};
+      for (int j = 0; j < 9; j++) {
+        if (initialGrid[j][i] != 0) {
+          if (colCount[initialGrid[j][i]] != null) {
+            print('列 $i で重複: ${initialGrid[j][i]}');
+            return false;
+          }
+          colCount[initialGrid[j][i]] = 1;
+        }
+      }
+    }
+
+    for (int blockRow = 0; blockRow < 3; blockRow++) {
+      for (int blockCol = 0; blockCol < 3; blockCol++) {
+        Map<int, int> blockCount = {};
+        for (int i = 0; i < 3; i++) {
+          for (int j = 0; j < 3; j++) {
+            int value = initialGrid[blockRow * 3 + i][blockCol * 3 + j];
+            if (value != 0) {
+              if (blockCount[value] != null) {
+                print('3x3ブロック ($blockRow, $blockCol) で重複: $value');
+                return false;
+              }
+              blockCount[value] = 1;
+            }
+          }
+        }
+      }
+    }
+
+    // 2. 表示セル数の確認
+    int visibleCount = initialGrid.expand((row) => row).where((cell) => cell != 0).length;
+    int expectedCount = visibleCount == 17 ? 17 : visibleCount == 25 ? 25 : 30;
+    if (visibleCount != expectedCount) {
+      print('表示セル数不一致: 期待値 $expectedCount, 実際 $visibleCount');
+      return false;
+    }
+
+    // 3. fullGridが有効か確認
+    if (!_isValidFullGrid(fullGrid)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  bool _isValidFullGrid(List<List<int>> grid) {
+    for (int i = 0; i < 9; i++) {
+      Map<int, int> rowCount = {};
+      Map<int, int> colCount = {};
+      for (int j = 0; j < 9; j++) {
+        if (grid[i][j] == 0 || grid[i][j] < 1 || grid[i][j] > 9) {
+          print('fullGridに無効な値: ($i, $j), 値: ${grid[i][j]}');
+          return false;
+        }
+        if (rowCount[grid[i][j]] != null) {
+          print('fullGrid 行 $i で重複: ${grid[i][j]}');
+          return false;
+        }
+        rowCount[grid[i][j]] = 1;
+        if (colCount[grid[j][i]] != null) {
+          print('fullGrid 列 $i で重複: ${grid[j][i]}');
+          return false;
+        }
+        colCount[grid[j][i]] = 1;
+      }
+    }
+
+    for (int blockRow = 0; blockRow < 3; blockRow++) {
+      for (int blockCol = 0; blockCol < 3; blockCol++) {
+        Map<int, int> blockCount = {};
+        for (int i = 0; i < 3; i++) {
+          for (int j = 0; j < 3; j++) {
+            int value = grid[blockRow * 3 + i][blockCol * 3 + j];
+            if (blockCount[value] != null) {
+              print('fullGrid 3x3ブロック ($blockRow, $blockCol) で重複: $value');
+              return false;
+            }
+            blockCount[value] = 1;
+          }
+        }
+      }
+    }
+
+    return true;
+  }
+
+  bool _isValidInitialGrid(List<List<int>> grid) {
+    for (int i = 0; i < 9; i++) {
+      Map<int, int> rowCount = {};
+      for (int j = 0; j < 9; j++) {
+        if (grid[i][j] != 0) {
+          if (rowCount[grid[i][j]] != null) return false;
+          rowCount[grid[i][j]] = 1;
+        }
+      }
+      Map<int, int> colCount = {};
+      for (int j = 0; j < 9; j++) {
+        if (grid[j][i] != 0) {
+          if (colCount[grid[j][i]] != null) return false;
+          colCount[grid[j][i]] = 1;
+        }
+      }
+    }
+
+    for (int blockRow = 0; blockRow < 3; blockRow++) {
+      for (int blockCol = 0; blockCol < 3; blockCol++) {
+        Map<int, int> blockCount = {};
+        for (int i = 0; i < 3; i++) {
+          for (int j = 0; j < 3; j++) {
+            int value = grid[blockRow * 3 + i][blockCol * 3 + j];
+            if (value != 0) {
+              if (blockCount[value] != null) return false;
+              blockCount[value] = 1;
+            }
+          }
+        }
+      }
+    }
+
+    return true;
+  }
+
+  bool _isValidMove(List<List<int>> grid, int row, int col, int value) {
+    for (int x = 0; x < 9; x++) {
+      if (x != col && grid[row][x] == value) return false;
+      if (x != row && grid[x][col] == value) return false;
+    }
+    int startRow = row - row % 3;
+    int startCol = col - col % 3;
+    for (int i = 0; i < 3; i++) {
+      for (int j = 0; j < 3; j++) {
+        if ((startRow + i != row || startCol + j != col) && grid[startRow + i][startCol + j] == value) return false;
+      }
+    }
+    return true;
   }
 }
