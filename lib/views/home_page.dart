@@ -26,14 +26,16 @@ class _DifficultyCardState extends State<DifficultyCard> with SingleTickerProvid
   late AnimationController _controller;
   late Animation<double> _scaleAnimation;
 
+  final int animationDurationMillSec = 100;
+
   @override
   void initState() {
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: Duration(milliseconds: 150), // Short and natural animation
+      duration: Duration(milliseconds: animationDurationMillSec), // Short and natural animation
     );
-    _scaleAnimation = Tween<double>(begin: 1.0, end: 0.95).animate(
+    _scaleAnimation = Tween<double>(begin: 1.0, end: 1.10).animate(
       CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
     );
   }
@@ -56,6 +58,8 @@ class _DifficultyCardState extends State<DifficultyCard> with SingleTickerProvid
     _controller.reverse(); // Scale up on cancel
   }
 
+
+
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
@@ -63,6 +67,11 @@ class _DifficultyCardState extends State<DifficultyCard> with SingleTickerProvid
       onTapUp: _onTapUp,
       onTapCancel: _onTapCancel,
       onTap: () async {
+        _controller.forward();
+        await Future.delayed(Duration(milliseconds: animationDurationMillSec));
+        _controller.reverse();
+        await Future.delayed(Duration(milliseconds: animationDurationMillSec));
+
         showDialog(
           context: widget.parentContext,
           barrierDismissible: false,
